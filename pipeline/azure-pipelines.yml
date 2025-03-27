@@ -1,0 +1,101 @@
+trigger:
+- main
+
+resources:
+- repo: self
+
+variables:
+  vmImageName: 'ubuntu-latest'
+  Path_YAMLIntegrationTests: './src'
+
+stages:
+- stage: SecurityAnalysis
+  displayName: Security Analysis stage
+  jobs:
+  - job: SecurityAnalysis
+    displayName: Security Analysis
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - script: |
+        kind
+        cd $(Path_YAMLIntegrationTests)
+        kind create cluster --name kind-01 --config=kind-cluster-config-automation-env.yaml
+      displayName: Criar cluster Kubernetes local com kind
+    - script: |
+        echo ' '
+        echo 'Cluster Kubernetes local em funcionamento...'
+        echo ' '
+        kubectl get services
+      displayName: Verificar cluster Kubernetes local criado com kind
+    - script: docker container ls
+      displayName: Exibir containers em execução
+    - script: |
+        kubectl create namespace integrationtests
+      displayName: Criar namespace integrationtests
+    - script: |
+        kubectl get namespaces
+      displayName: Exibir namespaces criados
+    - script: |
+        cd $(Path_YAMLIntegrationTests)
+        kubectl apply -f deployment-automation-env.yml -n integrationtests
+      displayName: Criar deployment no ambiente de testes
+    - script: |
+        kubectl get all -n integrationtests
+        echo ' '
+        echo 'Aguardando a inicialização dos serviços no cluster...'
+        echo ' '
+        sleep 45s
+        kubectl get all -n integrationtests
+      displayName: Verificar subida do eployment do ambiente de testes no namespace integrationtests
+    - script: |
+        echo ''
+        echo '***** Primeira requisicao *****'
+        echo ''
+        curl -s http://localhost:5000/api/contador -H "Accept: application/json" | jq
+      displayName: Testes do deployment no cluster (API REST) - 1a requisicao
+    - script: |
+        echo ''
+        echo '***** Segunda requisicao *****'
+        echo ''
+        curl -s http://localhost:5000/api/contador -H "Accept: application/json" | jq
+      displayName: Testes do deployment no cluster (API REST) - 2a requisicao
+    - script: |
+        sudo apt-get install wget apt-transport-https gnupg
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+        echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update
+        sudo apt-get install trivy      
+      displayName: Instalar o Trivy
+    - script: |
+        echo ''
+        echo '***** Versao do Trivy *****'
+        echo ''
+        trivy --version
+        echo ''
+        trivy
+      displayName: Testar o Trivy
+    - script: |
+        kubectl config get-contexts
+      displayName: Exibir contexts/clusters disponiveis para acesso
+    - script: |
+        trivy kubernetes --help
+      displayName: Exibir opcoes do comando trivy kubernetes
+    - script: |
+        trivy k8s --report all --format json --output ./report-k8s.json kind-kind-01
+      displayName: Executar analise do cluster kind-kind-01 com o Trivy (--report all + arquivo .json)
+    - script: |
+        pwd
+        echo ''
+        ls
+        cat report-k8s.json
+      displayName: Exibir conteudo do arquivo report-k8s.json
+    - script: |
+        trivy kubernetes --report summary kind-kind-01
+      displayName: Executar analise do cluster kind-kind-01 com o Trivy (--report summary + stdout)
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: './report-k8s.json'
+        ArtifactName: 'AnalysisTrivy'
+        publishLocation: 'Container'
+      displayName: Publicacao de relatorio SARIF
